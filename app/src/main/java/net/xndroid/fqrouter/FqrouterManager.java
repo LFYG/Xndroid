@@ -2,9 +2,16 @@ package net.xndroid.fqrouter;
 
 
 import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.ServiceConnection;
 import android.net.VpnService;
 import android.os.Build;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
 import android.util.Log;
 
 import net.xndroid.AppModel;
@@ -36,7 +43,7 @@ public class FqrouterManager {
     public static final int ASK_VPN_PERMISSION = 101;
     public static boolean sRequestApproved = false;
     private static Process mProcess;
-
+    protected static Messenger sMessenger;
     public static boolean sIsQualified = false;
     public static String sNATType = "UNKNOW";
     public static String sTeredoIP = "UNKNOW";
@@ -79,7 +86,12 @@ public class FqrouterManager {
                         , Pattern.DOTALL).matcher(proxy);
                 if(!matcherField.find())
                     continue;
-                sFqrouterInfo += "<p>" + matcherField.group(1)
+                String proxyTip = "";
+                if(proxy.contains("btn-inverse"))
+                    continue;
+                if(proxy.contains("btn-danger"))
+                    proxyTip = "(Died)";
+                sFqrouterInfo += "<p>" + matcherField.group(1) + proxyTip
                                 + "</p><p style=\"color:#545601\">&emsp &emsp RX &nbsp "
                                 + matcherField.group(2).replace(" ", "&nbsp ") + " &emsp &ensp "
                                 + matcherField.group(3).replace(" ", "&nbsp ")
@@ -128,7 +140,19 @@ public class FqrouterManager {
             sRequestApproved = true;
             Intent service = new Intent(sContext, SocksVpnService.class);
             service.putExtra("origin_ipv6", sOriginIPv6);
+            ServiceConnection serviceConnection = new ServiceConnection() {
+                @Override
+                public void onServiceConnected(ComponentName name, IBinder service) {
+                    FqrouterManager.sMessenger = new Messenger(service);
+                }
+
+                @Override
+                public void onServiceDisconnected(ComponentName name) {
+                    FqrouterManager.sMessenger = null;
+                }
+            };
             sContext.startService(service);
+            sContext.bindService(service, serviceConnection, Context.BIND_AUTO_CREATE);
         } else {
             AppModel.fatalError(sContext.getString(R.string.vpn_reject));
         }
@@ -166,6 +190,8 @@ public class FqrouterManager {
     public static String originIPv6(){
         String output = ShellUtils.exec("ip route get 2001:13d2:2801::11");
         if(ShellUtils.stdErr != null || output.contains("error") || output.contains("unreachable"))
+            return null;
+        if(output.contains("via fe80"))
             return null;
         String regex = "src\\s((\\w|:)+)";
         Pattern pattern = Pattern.compile(regex);
@@ -323,6 +349,13 @@ public class FqrouterManager {
 
     public static void postStop(){
         if(!AppModel.sIsRootMode) {
+            if(null != sMessenger){
+                try {
+                    sMessenger.send(Message.obtain(null, SocksVpnService.MSG_STOP_VPN, 0, 0));
+                } catch (RemoteException e) {
+                    e.printStackTrace();
+                }
+            }
             sContext.stopService(new Intent(sContext, SocksVpnService.class));
         }
         if(mProcess != null) {
